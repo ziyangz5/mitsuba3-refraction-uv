@@ -160,10 +160,10 @@ public:
                 m_aov_names.push_back(item[0] + ".Y");
                 m_aov_names.push_back(item[0] + ".Z");
             } else if (item[1] == "sh_normal") {
-                m_aov_types.push_back(Type::ShadingNormal);
-                m_aov_names.push_back(item[0] + ".X");
-                m_aov_names.push_back(item[0] + ".Y");
-                m_aov_names.push_back(item[0] + ".Z");
+                // m_aov_types.push_back(Type::ShadingNormal);
+                // m_aov_names.push_back(item[0] + ".X");
+                // m_aov_names.push_back(item[0] + ".Y");
+                // m_aov_names.push_back(item[0] + ".Z");
             } else if (item[1] == "dp_du") {
                 m_aov_types.push_back(Type::dPdU);
                 m_aov_names.push_back(item[0] + ".X");
@@ -191,6 +191,10 @@ public:
             } else {
                 Throw("Invalid AOV type \"%s\"!", item[1]);
             }
+                m_aov_types.push_back(Type::ShadingNormal);
+                m_aov_names.push_back(item[0] + ".X");
+                m_aov_names.push_back(item[0] + ".Y");
+                m_aov_names.push_back(item[0] + ".Z");
         }
 
         if (m_aov_names.empty())
@@ -209,7 +213,92 @@ public:
 
         SurfaceInteraction3f si =
             scene->ray_intersect(ray, (uint32_t) RayFlags::All, true, active);
+
+        Mask valid_ray = active && si.is_valid();
+        active &= si.is_valid();
+        if (dr::none_or<false>(active))
+        {
+            for (size_t i = 0; i < m_aov_types.size(); ++i) {
+                switch (m_aov_types[i]) {
+                    case Type::Albedo: {
+                            *_aovs++ = 0;
+                            *_aovs++ = 0;
+                            *_aovs++ = 0;
+                        }
+                        break;
+                    case Type::Depth:
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::Position:
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::UV:
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::GeometricNormal:
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::ShadingNormal:
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::dPdU:
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::dPdV:
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::dUVdx:
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::dUVdy:
+                        *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::PrimIndex:
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::ShapeIndex:
+                        *_aovs++ = 0;
+                        break;
+
+                    case Type::IntegratorRGBA: {
+                        *_aovs++ = 0; *_aovs++ = 0; *_aovs++ = 0;
+                        *_aovs++ = 0;
+                        }
+                        break;
+                }
+            }
+            return result;
+        }
+
+
         dr::masked(si, !si.is_valid()) = dr::zeros<SurfaceInteraction3f>();
+        size_t ctr = 0;
+
+        BSDFContext ctx;
+        BSDFPtr bsdf = si.bsdf(ray);
 
         auto spectrum_to_color3f = [](const Spectrum& spec, const Ray3f& ray, Mask active) {
             DRJIT_MARK_USED(active);
@@ -236,118 +325,97 @@ public:
 
         // We want to pack the channels such that base_channels and inner-integrator
         // RGBA channels are contiguous
-        Float* aovs_rgba_integrator = _aovs;
-        Float* aovs = _aovs + m_integrator_aovs_count;
 
-        size_t inner_idx = 0;
-        for (size_t i = 0; i < m_aov_types.size(); ++i) {
-            switch (m_aov_types[i]) {
-                case Type::Albedo: {
-                        Color3f rgb(0.f);
-                        if (dr::any_or<true>(si.is_valid()))
-                        {
-                            Mask valid = active && si.is_valid();
-                            BSDFPtr m_bsdf = si.bsdf(ray);
+        Mask isGlass = active && has_flag(bsdf->flags(), BSDFFlags::Transmission);
+        Ray3f next_ray(ray);
+        int i = 0;
+        while (true)
+        {
+            if (dr::any_or<true>(isGlass))
+            {
+                Vector3f wo = si.to_local(next_ray.d);
+                auto [bsdf_val, bsdf_pdf, bsdf_sample, bsdf_weight]
+                    = bsdf->eval_pdf_sample(ctx, si, wo, 0.5, 0.5);
+                next_ray = si.spawn_ray(si.to_world(bsdf_sample.wo));
+                si = scene->ray_intersect(
+                next_ray, +RayFlags::All, /* coherent = */ true, active);  
+                active &= si.is_valid();
+                if (!dr::any_or<true>(si.is_valid()))
+                    break;
+                isGlass = active && has_flag(si.bsdf(next_ray)->flags(), BSDFFlags::Transmission);
+                i++;
+                if (i > 10)
+                {
+                    for (size_t i = 0; i < m_aov_types.size(); ++i) {
+                        switch (m_aov_types[i]) {
+                            
+                            case Type::Position:
+                                *_aovs++ = 0;
+                                *_aovs++ = 0;
+                                *_aovs++ = 0;
+                                break;
 
-                            Spectrum spec =
-                                m_bsdf->eval_diffuse_reflectance(si, valid);
-                            dr::masked(rgb, valid) =
-                                spectrum_to_color3f(spec, ray, valid);
+                            case Type::UV:
+                                *_aovs++ = 0;
+                                *_aovs++ = 0;
+                                break;
+
+                            case Type::GeometricNormal:
+                                *_aovs++ = 0;
+                                *_aovs++ = 0;
+                                *_aovs++ = 0;
+                                break;
+
+                            case Type::ShadingNormal:
+                                *_aovs++ = 0;
+                                *_aovs++ = 0;
+                                *_aovs++ = 0;
+                                break;
+
+                            case Type::ShapeIndex:
+                                *_aovs++ = 0;
+                                break;
                         }
-
-                        *aovs++ = rgb.r();
-                        *aovs++ = rgb.g();
-                        *aovs++ = rgb.b();
                     }
                     break;
-                case Type::Depth:
-                    *aovs++ = dr::select(si.is_valid(), si.t, 0.f);
-                    break;
-
-                case Type::Position:
-                    *aovs++ = si.p.x();
-                    *aovs++ = si.p.y();
-                    *aovs++ = si.p.z();
-                    break;
-
-                case Type::UV:
-                    *aovs++ = si.uv.x();
-                    *aovs++ = si.uv.y();
-                    break;
-
-                case Type::GeometricNormal:
-                    *aovs++ = si.n.x();
-                    *aovs++ = si.n.y();
-                    *aovs++ = si.n.z();
-                    break;
-
-                case Type::ShadingNormal:
-                    *aovs++ = si.sh_frame.n.x();
-                    *aovs++ = si.sh_frame.n.y();
-                    *aovs++ = si.sh_frame.n.z();
-                    break;
-
-                case Type::dPdU:
-                    *aovs++ = si.dp_du.x();
-                    *aovs++ = si.dp_du.y();
-                    *aovs++ = si.dp_du.z();
-                    break;
-
-                case Type::dPdV:
-                    *aovs++ = si.dp_dv.x();
-                    *aovs++ = si.dp_dv.y();
-                    *aovs++ = si.dp_dv.z();
-                    break;
-
-                case Type::dUVdx:
-                    si.compute_uv_partials(ray);
-                    *aovs++ = si.duv_dx.x();
-                    *aovs++ = si.duv_dx.y();
-                    break;
-
-                case Type::dUVdy:
-                    *aovs++ = si.duv_dy.x();
-                    *aovs++ = si.duv_dy.y();
-                    break;
-
-                case Type::PrimIndex:
-                    *aovs++ = Float(si.prim_index);
-                    break;
-
-                case Type::ShapeIndex:
-                    if constexpr (!dr::is_jit_v<Float>) {
-                        ShapePtr target = si.instance;
-                        if (!target)
-                            target = si.shape;
-
-                        auto it = shape_to_idx.find(target);
-                        if (it == shape_to_idx.end())
-                            *aovs++ = 0;
-                        else
-                            *aovs++ = it->second;
-                    } else {
-                        *aovs++ = Float(dr::reinterpret_array<UInt32>(si.shape));
-                    }
-                    break;
-
-                case Type::IntegratorRGBA: {
-                    auto [inner_spec, inner_mask] 
-                        = m_integrators[inner_idx]->sample(scene, sampler, ray, medium, aovs, active);
-                    dr::disable_grad(inner_spec);
-
-                    Color3f rgb = spectrum_to_color3f(inner_spec, ray, active);
-
-                    aovs += m_integrators[inner_idx]->aov_names().size();
-                    *aovs_rgba_integrator++ = rgb.r();
-                    *aovs_rgba_integrator++ = rgb.g();
-                    *aovs_rgba_integrator++ = rgb.b();
-                    *aovs_rgba_integrator++ = dr::select(inner_mask, Float(1.f), Float(0.f));
-                    if (inner_idx == 0)
-                        result = {inner_spec, inner_mask};
-
-                    inner_idx++;
-                } break;
+                }
             }
+            else
+            {
+                for (size_t i = 0; i < m_aov_types.size(); ++i) {
+                    switch (m_aov_types[i]) {
+                        
+                        case Type::Position:
+                            *_aovs++ = si.p.x();
+                            *_aovs++ = si.p.y();
+                            *_aovs++ = si.p.z();
+                            break;
+
+                        case Type::UV:
+                            *_aovs++ = si.uv.x();
+                            *_aovs++ = si.uv.y();
+                            break;
+
+                        case Type::GeometricNormal:
+                            *_aovs++ = si.n.x();
+                            *_aovs++ = si.n.y();
+                            *_aovs++ = si.n.z();
+                            break;
+
+                        case Type::ShadingNormal:
+                            *_aovs++ = si.sh_frame.n.x();
+                            *_aovs++ = si.sh_frame.n.y();
+                            *_aovs++ = si.sh_frame.n.z();
+                            break;
+
+                        case Type::ShapeIndex:
+                            *_aovs++ = Float(si.shape->obj_num_id());
+                            break;
+                    }
+                }
+                break;
+            }
+                
         }
 
         return result;
